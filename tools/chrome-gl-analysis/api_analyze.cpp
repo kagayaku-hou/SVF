@@ -1,3 +1,5 @@
+#include <regex>
+
 #include "SVF-FE/LLVMUtil.h"
 #include "SVF-FE/CPPUtil.h"
 
@@ -23,20 +25,97 @@ struct LLVMFuncInfo {
     int nrArgs;
 };
 
-/*
-LLVMFuncInfo parseFuncFromDname(cppUtil::DemangledName &dname) {
-    LLVMFuncInfo ret;
-    return ret;
-}
-*/
 
 using json = nlohmann::json;
 
-cl::opt<string> apispec("api_spec", cl::desc("Specify WebGL API spec file (json formate)"), 
+static cl::opt<string> apispec("api_spec", cl::desc("Specify WebGL API spec file (json formate)"),
                         cl::value_desc("apispec"), cl::Required);
 
-cl::opt<string> ir("ir", cl::desc("Specify WebGL API IR file"), 
+static cl::opt<string> ir("ir", cl::desc("Specify WebGL API IR file"),
                         cl::value_desc("IR file"), cl::Required);
+
+bool parseApiArgTypes(string& raw, vector<string> &res) {
+    auto lp1 = raw.find("(");
+    auto lp2 = raw.rfind("(");
+    auto rp1 = raw.rfind(")");
+    auto rp2 = raw.find(")");
+
+    res.clear();
+
+    if (lp1 == string::npos || \
+        rp1 == string::npos || \
+        (lp1 != lp2) || (rp1 != rp2)) {
+        return false;
+    }
+    auto s = lp1 + 1;
+    auto e = rp1 - 1;
+    int i;
+
+    while (s < e) {
+        int lb = 0;
+        i = s;
+        while (i < e) {
+            if (raw[i] == '<') {
+                lb ++;
+            } else if (raw[i] == '>') {
+                lb --;
+            } else if (raw[i] == ',') {
+                if (lb == 0) {
+                    break;
+                }
+            }
+
+            i++;
+        }
+
+        int l = i - s;
+        if (i == e)
+            l += 1;
+
+        res.push_back(raw.substr(s, l));
+        s = i + 1;
+    }
+
+    /*
+    while ((e = raw.find(',', s)) != string::npos) {
+        res.push_back(raw.substr(s, e -s));
+        s = e + 1;
+    }
+    res.push_back(raw.substr(s, rp1 - s));
+    */
+
+    return true;
+}
+
+
+bool match(string &rawName, json &spec, int version) {
+    cout << "----------- begin match ---------\n";
+    cout << "rawName:" << rawName << endl;
+
+    vector<string> res;
+    if (!parseApiArgTypes(rawName, res)) {
+        cout << "failed to parse the arg types" << endl;
+    } else {
+        cout << "parsed result: " << endl;
+        for (int i = 0; i < res.size(); i ++) {
+            cout << " - arg " << i << endl;
+            cout << "  - type " << res[i] << endl;
+        }
+    }
+
+    json &args = spec["args"];
+
+    cout << "spec: " << endl;
+    for (int i = 0; i < args.size(); i ++) {
+        cout << " - arg " << i << endl;
+        cout << "  - name: " << args[i]["name"] << endl;
+        cout << "  - arg_type: " << args[i]["arg_type"] << endl;
+    }
+
+    cout << "----------- end match ---------\n";
+
+    return true;
+}
 
 
 int main(int argc, char **argv) {
@@ -54,11 +133,11 @@ int main(int argc, char **argv) {
     
     i >> spec;
 
-    // int sver = spec["version"].get<int>();
+    int sver = spec["version"].get<int>();
 
     json &apis = spec["apis"];
     map<int, APIInfo> api_res;
-    map<int, json> api_spec; 
+    // map<int, json> api_spec;
     map<string, set<int>> name2ids;
     
     set<int> seenIds;
@@ -67,6 +146,7 @@ int main(int argc, char **argv) {
         json &api = apis[i];
         int id = api["id"].get<int>();
         string name = api["name"].get<string>();
+
 /*
         json &args = api["args"];
 
@@ -75,7 +155,8 @@ int main(int argc, char **argv) {
         cout << "# args: " << args.size() << endl;
         cout << "=========================\n";
 */
-        api_spec[i] = api;
+
+        // api_spec[i] = api;
         api_res[i] = {name, {}};
 
         name2ids[name].insert(id);
@@ -134,6 +215,7 @@ int main(int argc, char **argv) {
             for (auto it = info.resolve.begin(); it != info.resolve.end(); it++) {
                 cout << "  - " << it->first << endl;
                 cout << "      - " << it->second << endl;
+                match(it->second, apis[i], sver);
             }
 
         }
