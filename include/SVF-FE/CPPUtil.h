@@ -45,6 +45,7 @@ namespace cppUtil
 
 struct DemangledName
 {
+    std::string rawName;
     std::string className;
     std::string funcName;
     bool isThunkFunc;

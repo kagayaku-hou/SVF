@@ -195,6 +195,7 @@ struct cppUtil::DemangledName cppUtil::demangle(const string &name)
     else
     {
         string realnameStr = string(realname);
+        dname.rawName = realname;
         string beforeParenthesis = getBeforeParenthesis(realnameStr);
         if (beforeParenthesis.find("::") == string::npos ||
                 isOperOverload(beforeParenthesis))
