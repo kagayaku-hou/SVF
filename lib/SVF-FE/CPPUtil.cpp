@@ -53,7 +53,7 @@ const string VThunkFuncLabel = "virtual thunk to ";
 const string clsName = "class.";
 const string structName = "struct.";
 
-static bool isOperOverload(const string name)
+static bool isOperOverload(const string &name)
 {
     u32_t leftnum = 0, rightnum = 0;
     string subname = name;
