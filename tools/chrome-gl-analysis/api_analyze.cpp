@@ -1,4 +1,5 @@
 #include <regex>
+#include <nlohmann/json.hpp>
 
 #include "SVF-FE/LLVMUtil.h"
 #include "SVF-FE/CPPUtil.h"
@@ -8,7 +9,7 @@
 #include "SVF-FE/SVFIRBuilder.h"
 #include "Util/Options.h"
 
-#include <nlohmann/json.hpp>
+#include "util.h"
 
 using namespace llvm;
 using namespace std;
@@ -26,6 +27,8 @@ struct LLVMFuncInfo {
 };
 
 
+// #define DBG 1
+
 using json = nlohmann::json;
 
 static cl::opt<string> apispec("api_spec", cl::desc("Specify WebGL API spec file (json formate)"),
@@ -33,6 +36,9 @@ static cl::opt<string> apispec("api_spec", cl::desc("Specify WebGL API spec file
 
 static cl::opt<string> ir("ir", cl::desc("Specify WebGL API IR file"),
                         cl::value_desc("IR file"), cl::Required);
+
+static cl::opt<string> dump_api("dump_api", cl::desc("dump all the functions with some name"),
+                        cl::value_desc("api name"));
 
 bool parseApiArgTypes(string& raw, vector<string> &res) {
     auto lp1 = raw.find("(");
@@ -72,56 +78,172 @@ bool parseApiArgTypes(string& raw, vector<string> &res) {
         if (i == e)
             l += 1;
 
-        res.push_back(raw.substr(s, l));
+        string t = trim(raw.substr(s, l));
+
+        // 1. getBufferParameter
+        // getProgramParameter etc
+        // has an extra blink::ScriptState as the first argument
+        // we ignore them
+
+        // 2. makeXRCompatible
+        // texImage2D etc
+        // take an extra argument of type
+        // blink::ExceptionState& (the last argument)
+        // we remove it here
+
+        // 2. texImagexD etc
+        // take an extra argument of type
+        // blink::ExecutionContext* (the first argument)
+        // we remove it here
+
+        if (0 != t.compare("blink::ScriptState*") &&
+            0 != t.compare("blink::ExceptionState&") &&
+            0 != t.compare("blink::ExecutionContext*"))
+            res.push_back(t);
+
         s = i + 1;
     }
-
-    /*
-    while ((e = raw.find(',', s)) != string::npos) {
-        res.push_back(raw.substr(s, e -s));
-        s = e + 1;
-    }
-    res.push_back(raw.substr(s, rp1 - s));
-    */
 
     return true;
 }
 
 
-bool match(string &rawName, json &spec, int version) {
+bool match(struct cppUtil::DemangledName &dname, json &spec, int version) {
+#ifdef DBG
     cout << "----------- begin match ---------\n";
     cout << "rawName:" << rawName << endl;
+#endif
 
+    string &rawName = dname.rawName;
+    bool ret = true;
     vector<string> res;
     if (!parseApiArgTypes(rawName, res)) {
         cout << "failed to parse the arg types" << endl;
     } else {
+
+#ifdef DBG
         cout << "parsed result: " << endl;
         for (int i = 0; i < res.size(); i ++) {
             cout << " - arg " << i << endl;
             cout << "  - type " << res[i] << endl;
         }
+#endif
+
     }
 
     json &args = spec["args"];
 
-    cout << "spec: " << endl;
+#ifdef DBG
+    cout << "spec of << " << spec["name"].get<string>()  "(id=" << spec["id"].get<int>() <<  ") :" << endl;
     for (int i = 0; i < args.size(); i ++) {
         cout << " - arg " << i << endl;
         cout << "  - name: " << args[i]["name"] << endl;
         cout << "  - arg_type: " << args[i]["arg_type"] << endl;
     }
-
     cout << "----------- end match ---------\n";
+#endif
 
-    return true;
+    if (res.size() != args.size()) {
+        ret = false;
+    } else {
+
+        cout << "matching spec of << " << spec["name"].get<string>()
+             << "(id=" << spec["id"].get<int>() <<  ") :" << endl;
+        for (int i = 0; i < args.size(); i ++) {
+
+            string &farg = res[i];
+            string sarg = args[i]["arg_type"].get<string>();
+
+            cout << "  matching arg " << i << "`"
+                 << sarg
+                 << "` -> `" << farg
+                 << "`" << endl;
+
+            // handle ArrayBufferView
+            // and ArrayBuffer args
+            auto pt = sarg.rfind("OrNull");
+            if (pt != string::npos) {
+                string t = sarg.substr(0, pt);
+                if (farg.find(t) == string::npos) {
+                    ret = false;
+                    break;
+                }
+
+                // ArrayBuffer does not match ArrayBufferView
+                auto vt = t.rfind("View");
+                if (vt == string::npos && farg.find(t + "View") != string::npos) {
+                    ret = false;
+                    break;
+                }
+            }
+
+            // handle GLsizexxptr
+            if (sarg.find("GL") == 0 && sarg.rfind("ptr") != string::npos) {
+                if (farg != "long") {
+                    ret = false;
+                    break;
+                }
+            }
+
+            // handle ImageData
+            if (sarg == "ImageData" && farg.find(sarg) == string::npos) {
+                ret = false;
+                break;
+            }
+
+            // handle texImagenD
+            // HTMLImageElement
+            // HTMLVideoElement
+            if (sarg.find("HTML") == 0 && sarg.find("HTMLCanvas") == string::npos &&
+                farg.find(sarg) == string::npos) {
+                ret = false;
+                break;
+            }
+
+            // Handle HTMLCanvasElement
+            if (sarg == "HTMLCanvasElement" && farg.find("VideoFrame") == string::npos) {
+                ret = false;
+                break;
+            }
+
+            // Handle OffscreenCanvas
+            if (sarg == "OffscreenCanvas" && farg.find("CanvasRenderingContextHost") == string::npos) {
+                ret = false;
+                break;
+            }
+
+
+            if (sarg == "ImageBitmap" && farg.find("ImageBitmap") == string::npos) {
+                ret = false;
+                break;
+            }
+
+
+            // handle array vs sequence
+            if (sarg.find("Array") != string::npos && farg.find("Array") == string::npos) {
+                ret = false;
+                break;
+            }
+
+            // GLfloatSequence
+            if (sarg.find("Sequence") != string::npos && farg.find("Vector") == string::npos) {
+                ret = false;
+                break;
+            }
+        }
+    
+        if (version == 1 && dname.className.find("WebGL2") != string::npos) {
+            ret = false;
+        }
+    }
+
+    return ret;
 }
-
 
 int main(int argc, char **argv) {
     cl::ParseCommandLineOptions(argc, argv,
                                 "Analyzing the llvm functions of each WebGL API\n");
- 
+
     ifstream i(apispec);
     json spec;
 
@@ -130,7 +252,6 @@ int main(int argc, char **argv) {
         return -1;
     }
 
-    
     i >> spec;
 
     int sver = spec["version"].get<int>();
@@ -168,25 +289,45 @@ int main(int argc, char **argv) {
         // cout << (*it)->getName().str() << endl;
         string mname = (*it)->getName().str();
         auto dname = cppUtil::demangle(mname);
-        if (dname.className.find("blink::WebGLRendering") == 0) {
+        if (dname.className.find("blink::WebGL") == 0) {
 /*
             cout << "oname:" << mname << endl;
             cout << "className: " <<  dname.className << endl;
             cout << "funcName: " << dname.funcName << endl;
 */
 
-            if (name2ids.find(dname.funcName) != name2ids.end()) {
-                for (auto &id : name2ids[dname.funcName]) {
-                    seenIds.insert(id);
-                    api_res[id].resolve[mname] = dname.rawName;
+            if (dump_api != "" ) {
+                static int i = 0;
+                if ( dname.funcName == dump_api) {
+                    cout << "i=" << i++ << endl;
+                    cout << "oname:" << mname << endl;
+                    cout << "className: " <<  dname.className << endl;
+                    cout << "funcName: " << dname.funcName << endl;
+                    cout << "dmangedName: " << dname.rawName << endl;
+                    cout << "======================================\n";
+                }
+            } else {
+
+                if (name2ids.find(dname.funcName) != name2ids.end()) {
+                    for (auto &id : name2ids[dname.funcName]) {
+                        seenIds.insert(id);
+
+                        if (match(dname, apis[id], sver))
+                            api_res[id].resolve[mname] = dname.rawName;
+                    }
                 }
             }
+
 /*
             cout << "isThunkFunc: " << dname.isThunkFunc << endl;
             cout << "-------------------------\n";
 */
 
         }
+    }
+
+    if (dump_api != "") {
+        return 0;
     }
 
     cout << "=========================\n"; 
@@ -215,12 +356,10 @@ int main(int argc, char **argv) {
             for (auto it = info.resolve.begin(); it != info.resolve.end(); it++) {
                 cout << "  - " << it->first << endl;
                 cout << "      - " << it->second << endl;
-                match(it->second, apis[i], sver);
             }
-
         }
 
-        cout << "------------------------------------\n";
+        cout << "------------------------------------\n\n\n\n";
     }
 
     return 0;
