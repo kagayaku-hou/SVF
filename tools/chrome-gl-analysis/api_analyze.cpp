@@ -33,8 +33,8 @@ static cl::opt<string> ir("ir", cl::desc("Specify WebGL API IR file"),
 static cl::opt<string> dump_api("dump_api", cl::desc("dump all the functions parsed for it"),
                                 cl::value_desc("api name"));
 
-static cl::opt<string> dump_api("output", cl::desc("the file to dump the parsed result"),
-                                cl::value_desc("json output file name"));
+static cl::opt<string> output("output", cl::desc("the file to dump the parsed result"),
+                                cl::value_desc("json output file name"), cl::Required);
 
 bool parseApiArgTypes(string& raw, vector<string> &res) {
     auto lp1 = raw.find("(");
@@ -356,6 +356,38 @@ int main(int argc, char **argv) {
         cout << "------------------------------------\n\n";
     }
 #endif
+
+
+    json o;
+    o["version"] = sver;
+    json m;
+
+    for (int i = 0; i < apis.size(); i ++) {
+        json mi;
+        APIInfo &info = api_res[i];
+        mi["id"] = i;
+        mi["name"] = info.name;
+        assert(info.resolve.size() == 1 && "name resolving failed");
+        auto it = info.resolve.begin();
+        mi["llvm_fname"] = it->first;
+        mi["dm_name"] = it->second;
+
+        m.push_back(mi);
+    }
+
+    o["mappings"] = m;
+
+    string of;
+    if (output == "") {
+        of = "output.json";
+    } else {
+        of = output;
+    }
+    ofstream ofs(of);
+
+    // write
+    ofs << setw(4);
+    ofs << o;
 
     return 0;
 }
